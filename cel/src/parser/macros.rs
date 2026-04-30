@@ -25,6 +25,7 @@ pub fn find_expander(
             Some(map_macro_expander)
         }
         operators::FILTER if args.len() == 2 && target.is_some() => Some(filter_macro_expander),
+        operators::REDUCE if args.len() == 4 && target.is_some() => Some(reduce_macro_expander),
         _ => None,
     }
 }
@@ -320,6 +321,40 @@ fn filter_macro_expander(
             accu_init: init,
             loop_cond: condition,
             loop_step: step,
+            result,
+        }))),
+    )
+}
+
+fn reduce_macro_expander(
+    helper: &mut MacroExprHelper,
+    target: Option<IdedExpr>,
+    mut args: Vec<IdedExpr>,
+) -> Result<IdedExpr, ParseError> {
+    if target.is_none() {
+        unreachable!("Expected a target, but got `None`!")
+    }
+    if args.len() != 4 {
+        unreachable!("Expected four args!")
+    }
+
+    let accu_var = extract_ident(args.remove(0), helper)?;
+    let iter_var = extract_ident(args.remove(0), helper)?;
+    let accu_init = args.remove(0);
+    let loop_step = args.remove(0);
+
+    let loop_cond = helper.next_expr(Expr::Literal(LiteralValue::Boolean(true.into())));
+    let result = helper.next_expr(Expr::Ident(accu_var.clone()));
+
+    Ok(
+        helper.next_expr(Expr::Comprehension(Box::new(ComprehensionExpr {
+            iter_range: target.unwrap(),
+            iter_var,
+            iter_var2: None,
+            accu_var,
+            accu_init,
+            loop_cond,
+            loop_step,
             result,
         }))),
     )

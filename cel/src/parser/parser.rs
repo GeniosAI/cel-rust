@@ -2048,6 +2048,41 @@ ERROR: <input>:1:24: unsupported syntax '?'
 | ......^",
                 ..Default::default()
             },
+            TestInfo {
+                i: "[1, 2, 3].reduce(acc, x, 0, acc + x)",
+                p: r#"__comprehension__(
+// Variable
+x,
+// Target
+[
+    1^#2:*expr.Constant_Int64Value#,
+    2^#3:*expr.Constant_Int64Value#,
+    3^#4:*expr.Constant_Int64Value#
+]^#1:*expr.Expr_ListExpr#,
+// Accumulator
+acc,
+// Init
+0^#8:*expr.Constant_Int64Value#,
+// LoopCondition
+true^#12:*expr.Constant_BoolValue#,
+// LoopStep
+_+_(
+    acc^#9:*expr.Expr_IdentExpr#,
+    x^#11:*expr.Expr_IdentExpr#
+)^#10:*expr.Expr_CallExpr#,
+// Result
+acc^#13:*expr.Expr_IdentExpr#)^#14:*expr.Expr_ComprehensionExpr#"#,
+                e: "",
+                ..Default::default()
+            },
+            TestInfo {
+                i: "[1].reduce(1, x, 0, x)",
+                p: "",
+                e: "ERROR: <input>:1:12: argument must be a simple name
+| [1].reduce(1, x, 0, x)
+| ...........^",
+                ..Default::default()
+            },
         ];
 
         for test_case in test_cases {

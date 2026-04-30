@@ -507,6 +507,48 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce() {
+        [
+            (
+                "reduce sum",
+                "[1, 2, 3, 4].reduce(acc, x, 0, acc + x) == 10",
+            ),
+            (
+                "reduce product",
+                "[1, 2, 3, 4].reduce(acc, x, 1, acc * x) == 24",
+            ),
+            (
+                "reduce empty list returns init",
+                "[].reduce(acc, x, 42, acc + x) == 42",
+            ),
+            (
+                "reduce can build lists",
+                "[1, 2, 3].reduce(acc, x, [], acc + [x * 2]) == [2, 4, 6]",
+            ),
+            (
+                "reduce shadows outer bindings",
+                "[1, 2, 3].reduce(acc, x, 0, acc + x) == 6",
+            ),
+        ]
+        .iter()
+        .for_each(|input| {
+            if input.0 == "reduce shadows outer bindings" {
+                let mut ctx = Context::default();
+                ctx.add_variable_from_value("acc", 1000i64);
+                ctx.add_variable_from_value("x", 1000i64);
+                assert_eq!(
+                    test_script(input.1, Some(ctx)),
+                    Ok(true.into()),
+                    "{}",
+                    input.0
+                );
+            } else {
+                assert_script(input);
+            }
+        });
+    }
+
+    #[test]
     fn test_all() {
         [
             ("all list #1", "[0, 1, 2].all(x, x >= 0)"),
