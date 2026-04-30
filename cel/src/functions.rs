@@ -650,6 +650,20 @@ mod tests {
         .for_each(assert_script);
     }
 
+    #[test]
+    fn test_split() {
+        [("split string", "'ab cd'.split(' ') == ['ab', 'cd']")]
+            .iter()
+            .for_each(assert_script);
+    }
+
+    #[test]
+    fn test_substring() {
+        [("substring string", "'abcd'.substring(0, 2) == 'ab'")]
+            .iter()
+            .for_each(assert_script);
+    }
+
     #[cfg(feature = "chrono")]
     #[test]
     fn test_timestamp() {
@@ -700,6 +714,10 @@ mod tests {
             (
                 "timestamp getDate",
                 "timestamp('2023-05-28T00:00:00Z').getDate() == 28",
+            ),
+            (
+                "timestamp date",
+                "timestamp('2024-01-15T10:30:45.123Z').date() == '2024-01-15'",
             ),
             (
                 "timestamp getDayOfWeek",

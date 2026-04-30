@@ -218,6 +218,14 @@ fn date<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val>, ExecutionEr
     })
 }
 
+fn date_string<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val>, ExecutionError> {
+    super::unary_fn(args, super::TIMESTAMP_TYPE, |ts: &Timestamp| {
+        Ok(Box::new(CelString::from(
+            ts.inner().format("%Y-%m-%d").to_string(),
+        )))
+    })
+}
+
 fn day_of_month<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val>, ExecutionError> {
     super::unary_fn(args, super::TIMESTAMP_TYPE, |ts: &Timestamp| {
         Ok(Box::new(CelInt::from(ts.inner().day0() as i64)))
@@ -312,6 +320,14 @@ pub(crate) fn stdlib(env: &mut crate::Env) {
         super::TIMESTAMP_TYPE,
         Vec::default(),
         date,
+    )
+    .expect("Must be unique");
+    env.add_member_overload(
+        "date",
+        "timestamp_to_date_string",
+        super::TIMESTAMP_TYPE,
+        Vec::default(),
+        date_string,
     )
     .expect("Must be unique");
     env.add_member_overload(

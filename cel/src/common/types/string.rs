@@ -1,5 +1,5 @@
 use crate::common::traits::{self, Adder, Comparer, Sizer, Zeroer};
-use crate::common::types::{CelBool, CelBytes, CelDouble, CelInt, CelUInt, Kind, Type};
+use crate::common::types::{CelBool, CelBytes, CelDouble, CelInt, CelList, CelUInt, Kind, Type};
 #[cfg(feature = "chrono")]
 use crate::common::types::{CelDuration, CelTimestamp};
 use crate::common::value::{Downcast, Val};
@@ -179,6 +179,66 @@ fn starts_with_string<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val
     )
 }
 
+fn split_string<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val>, ExecutionError> {
+    super::binary_fn(
+        args,
+        super::STRING_TYPE,
+        super::STRING_TYPE,
+        |target: &String, delimiter: &String| {
+            let items: Vec<Box<dyn Val>> = target
+                .inner()
+                .split(delimiter.inner())
+                .map(|part| Box::new(String::from(part)) as Box<dyn Val>)
+                .collect();
+            Ok(Box::new(CelList::from(items)))
+        },
+    )
+}
+
+fn substring_string<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val>, ExecutionError> {
+    let target = &args[0];
+    let start = &args[1];
+    let end = &args[2];
+
+    let target = target
+        .downcast_ref::<String>()
+        .ok_or_else(|| ExecutionError::UnexpectedType {
+            got: target.get_type().name().to_string(),
+            want: super::STRING_TYPE.name().to_string(),
+        })?;
+    let start = start
+        .downcast_ref::<CelInt>()
+        .ok_or_else(|| ExecutionError::UnexpectedType {
+            got: start.get_type().name().to_string(),
+            want: super::INT_TYPE.name().to_string(),
+        })?;
+    let end = end
+        .downcast_ref::<CelInt>()
+        .ok_or_else(|| ExecutionError::UnexpectedType {
+            got: end.get_type().name().to_string(),
+            want: super::INT_TYPE.name().to_string(),
+        })?;
+
+    let start = *start.inner();
+    let end = *end.inner();
+    let char_len = target.inner().chars().count() as i64;
+
+    if start < 0 || end < 0 || start > end || end > char_len {
+        return Err(ExecutionError::function_error(
+            "substring",
+            format!("invalid substring range: {start}..{end}"),
+        ));
+    }
+
+    let substring: StdString = target
+        .inner()
+        .chars()
+        .skip(start as usize)
+        .take((end - start) as usize)
+        .collect();
+    Ok(Cow::<dyn Val>::Owned(Box::new(String::from(substring))))
+}
+
 #[cfg(feature = "regex")]
 fn matches<'a>(args: Vec<Cow<'a, dyn Val>>) -> Result<Cow<'a, dyn Val>, ExecutionError> {
     super::binary_fn(
@@ -310,6 +370,22 @@ pub(crate) fn stdlib(env: &mut crate::Env) {
         super::STRING_TYPE,
         vec![super::STRING_TYPE],
         starts_with_string,
+    )
+    .expect("Must be unique id");
+    env.add_member_overload(
+        "split",
+        "split_string",
+        super::STRING_TYPE,
+        vec![super::STRING_TYPE],
+        split_string,
+    )
+    .expect("Must be unique id");
+    env.add_member_overload(
+        "substring",
+        "substring_string",
+        super::STRING_TYPE,
+        vec![super::INT_TYPE, super::INT_TYPE],
+        substring_string,
     )
     .expect("Must be unique id");
     #[cfg(feature = "regex")]
