@@ -4,10 +4,14 @@ permissions:
   pull-requests: write
   contents: write
 
+# NEUTRALIZED: this workflow holds CARGO_REGISTRY_TOKEN and contents/PR write
+# access and would auto-open release PRs and publish to crates.io on every push
+# to master. It is intentionally manual-only (workflow_dispatch) so it never runs
+# automatically. To cut a release deliberately, run it from the Actions tab
+# ("Run workflow"). Do NOT restore the push trigger without also confirming the
+# CARGO_REGISTRY_TOKEN secret and crates.io publishing are actually intended.
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
 
 jobs:
 

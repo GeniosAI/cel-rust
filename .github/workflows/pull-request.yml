@@ -1,7 +1,11 @@
 name: Pull Request Check
 
+# Upstream's DCO (Developer Certificate of Origin) sign-off check. Not needed for
+# our internal fork, so it's kept manual-only (workflow_dispatch) rather than
+# running on every PR. Restore the `pull_request:` trigger if we ever want to
+# enforce Signed-off-by on contributions again.
 on:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   dco:
