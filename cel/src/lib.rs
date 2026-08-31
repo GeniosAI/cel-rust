@@ -237,6 +237,12 @@ mod tests {
     }
 
     #[test]
+    fn logical_not_is_applied_for_each_prefix_operator() {
+        assert_eq!(test_script("!!true", None), Ok(true.into()));
+        assert_eq!(test_script("!!false", None), Ok(false.into()));
+    }
+
+    #[test]
     fn variables() {
         fn assert_output(script: &str, expected: ResolveResult) {
             let mut ctx = Context::default();
