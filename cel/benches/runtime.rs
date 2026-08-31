@@ -1,6 +1,6 @@
 use cel::context::{Context, VariableResolver};
 use cel::parser::Parser;
-use cel::{Program, Value};
+use cel::{PreparedValue, Program, Value};
 use criterion::{black_box, criterion_group, BenchmarkId, Criterion};
 use std::collections::HashMap;
 
@@ -83,6 +83,60 @@ pub fn criterion_benchmark_parsing(c: &mut Criterion) {
     }
 }
 
+fn prepared_fixture(object_count: usize) -> Value {
+    let objects = (0..object_count)
+        .map(|i| {
+            Value::from(HashMap::from([
+                ("id", Value::Int(i as i64)),
+                ("active", Value::Bool(i % 2 == 0)),
+                ("score", Value::Int(i as i64)),
+                (
+                    "profile",
+                    Value::from(HashMap::from([
+                        ("enabled", Value::Bool(true)),
+                        (
+                            "padding",
+                            Value::from((0..20).map(Value::Int).collect::<Vec<_>>()),
+                        ),
+                    ])),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    Value::from(HashMap::from([("objects", Value::from(objects))]))
+}
+
+pub fn prepared_context_benchmark(c: &mut Criterion) {
+    let expressions = [
+        ("nested_bool", "data.objects[3].profile.enabled"),
+        (
+            "primitive_predicate",
+            "data.objects[3].active && data.objects[3].score >= 3",
+        ),
+    ];
+    let mut group = c.benchmark_group("prepared context");
+
+    for object_count in [50, 500, 5_000] {
+        let prepared = PreparedValue::try_from_value(prepared_fixture(object_count)).unwrap();
+        for (name, expression) in expressions {
+            let program = Program::compile(expression).unwrap();
+            let mut context = Context::default();
+            context.add_prepared_variable("data", prepared.clone());
+
+            group.bench_function(format!("execute_{name}_{object_count}"), |b| {
+                b.iter(|| black_box(program.execute(black_box(&context)).unwrap()))
+            });
+            group.bench_function(format!("replace_and_execute_{name}_{object_count}"), |b| {
+                b.iter(|| {
+                    context.add_prepared_variable("data", prepared.clone());
+                    black_box(program.execute(black_box(&context)).unwrap())
+                })
+            });
+        }
+    }
+    group.finish();
+}
+
 pub fn map_macro_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("map list");
     let sizes = vec![1, 10, 100, 1000, 10000, 100000];
@@ -103,7 +157,7 @@ pub fn map_macro_benchmark(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default();
-    targets = criterion_benchmark, criterion_benchmark_parsing, map_macro_benchmark
+    targets = criterion_benchmark, criterion_benchmark_parsing, prepared_context_benchmark, map_macro_benchmark
 }
 
 #[cfg(feature = "dhat-heap")]

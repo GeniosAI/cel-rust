@@ -1347,7 +1347,7 @@ impl Value {
                         let args = args?;
                         let qualified_func = match &target.expr {
                             Expr::Ident(prefix) => {
-                                let qualified_name = format!("{prefix}.{}", &call.func_name);
+                                let qualified_name = format!("{prefix}.{}", call.func_name);
                                 if let Some(op) = ctx.env().find_overload(&qualified_name, &args) {
                                     return op(args);
                                 }
@@ -1387,36 +1387,35 @@ impl Value {
                 .get_variable(name)
                 .ok_or_else(|| ExecutionError::UndeclaredReference(Arc::new(name.to_string())))?),
             Expr::Select(select) => {
-                let left = Value::resolve_val(select.operand.deref(), ctx)?;
+                let operand = Value::resolve_val(select.operand.deref(), ctx)?;
                 let key: CelString = select.field.as_str().into();
-                match left.get_type().kind() {
-                    Kind::Map => {
-                        if select.test {
-                            Ok(bool(
-                                left.as_container()
-                                    .ok_or_else(|| {
-                                        ExecutionError::NoSuchKey(Arc::new(key.inner().to_string()))
-                                    })?
-                                    .contains(&key)?,
-                            ))
-                        } else {
-                            // todo avoid cloning when not needed
-                            Ok(Cow::<dyn Val>::Owned(
-                                left.as_indexer()
-                                    .ok_or_else(|| {
-                                        ExecutionError::NoSuchKey(Arc::new(key.inner().to_string()))
-                                    })?
-                                    .get(&key)?
-                                    .into_owned(),
-                            ))
-                        }
-                    }
-                    _ => Ok(Cow::<dyn Val>::Owned(
-                        left.as_indexer()
-                            .ok_or_else(|| ExecutionError::NoSuchOverload)?
-                            .get(&key)?
-                            .into_owned(),
-                    )),
+                if operand.get_type().kind() == Kind::Map && select.test {
+                    return Ok(bool(
+                        operand
+                            .as_container()
+                            .ok_or_else(|| {
+                                ExecutionError::NoSuchKey(Arc::new(key.inner().to_string()))
+                            })?
+                            .contains(&key)?,
+                    ));
+                }
+
+                match operand {
+                    Cow::Borrowed(value) => value
+                        .as_indexer()
+                        .ok_or_else(|| {
+                            if value.get_type().kind() == Kind::Map {
+                                ExecutionError::NoSuchKey(Arc::new(key.inner().to_string()))
+                            } else {
+                                ExecutionError::NoSuchOverload
+                            }
+                        })?
+                        .get(&key),
+                    Cow::Owned(value) => value
+                        .into_indexer()
+                        .ok_or(ExecutionError::NoSuchOverload)?
+                        .steal(&key)
+                        .map(Cow::Owned),
                 }
             }
             Expr::List(list_expr) => {
@@ -1771,9 +1770,99 @@ fn checked_op(
 
 #[cfg(test)]
 mod tests {
-    use crate::{objects::Key, Context, ExecutionError, Program, Value};
+    use crate::common::traits::Indexer;
+    use crate::common::types::{CelBool, CelMap, CelMapKey, Type, MAP_TYPE};
+    use crate::common::value::{Downcast, Val};
+    use crate::{objects::Key, Context, ExecutionError, PreparedValue, Program, Value};
+    use std::borrow::Cow;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct CloneCountingMap {
+        inner: CelMap,
+        clones: Arc<AtomicUsize>,
+    }
+
+    impl CloneCountingMap {
+        fn new(inner: HashMap<CelMapKey, Box<dyn Val>>, clones: Arc<AtomicUsize>) -> Self {
+            Self {
+                inner: inner.into(),
+                clones,
+            }
+        }
+    }
+
+    impl Val for CloneCountingMap {
+        fn get_type(&self) -> &Type {
+            &MAP_TYPE
+        }
+
+        fn as_indexer(&self) -> Option<&dyn Indexer> {
+            Some(self)
+        }
+
+        fn into_indexer(self: Box<Self>) -> Option<Box<dyn Indexer>> {
+            Some(self)
+        }
+
+        fn clone_as_boxed(&self) -> Box<dyn Val> {
+            self.clones.fetch_add(1, Ordering::SeqCst);
+            Box::new(Self {
+                inner: *self.inner.clone_as_boxed().downcast::<CelMap>().unwrap(),
+                clones: self.clones.clone(),
+            })
+        }
+    }
+
+    impl Indexer for CloneCountingMap {
+        fn get<'a>(&'a self, idx: &dyn Val) -> Result<Cow<'a, dyn Val>, ExecutionError> {
+            self.inner.get(idx)
+        }
+
+        fn steal(self: Box<Self>, idx: &dyn Val) -> Result<Box<dyn Val>, ExecutionError> {
+            Box::new(self.inner).steal(idx)
+        }
+    }
+
+    #[test]
+    fn nested_select_from_prepared_value_does_not_clone_containers() {
+        let clones = Arc::new(AtomicUsize::new(0));
+        let leaf = CloneCountingMap::new(
+            HashMap::from([(
+                CelMapKey::from("enabled"),
+                Box::new(CelBool::from(true)) as Box<dyn Val>,
+            )]),
+            clones.clone(),
+        );
+        let root = CloneCountingMap::new(
+            HashMap::from([(CelMapKey::from("profile"), Box::new(leaf) as Box<dyn Val>)]),
+            clones.clone(),
+        );
+        let mut context = Context::default();
+        context.add_prepared_variable("data", PreparedValue::from_boxed(Box::new(root)));
+
+        let result = Program::compile("data.profile.enabled")
+            .unwrap()
+            .execute(&context);
+
+        assert_eq!(result, Ok(Value::Bool(true)));
+        assert_eq!(clones.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn select_from_owned_temporary_steals_the_selected_value() {
+        let result = Program::compile("{'profile': {'enabled': true}}.profile.enabled")
+            .unwrap()
+            .execute(&Context::default());
+        assert_eq!(result, Ok(Value::Bool(true)));
+
+        let result = Program::compile("[{'enabled': true}][0].enabled")
+            .unwrap()
+            .execute(&Context::default());
+        assert_eq!(result, Ok(Value::Bool(true)));
+    }
 
     #[test]
     fn test_indexed_map_access() {

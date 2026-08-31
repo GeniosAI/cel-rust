@@ -5,7 +5,57 @@ use crate::parser::Expression;
 use crate::{Env, ExecutionError};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
+
+/// An immutable CEL value that can be shared cheaply between contexts.
+///
+/// Preparing a value performs the potentially expensive conversion into the
+/// evaluator's native representation once. Cloning this handle only increments
+/// an [`Arc`] reference count.
+#[derive(Clone)]
+pub struct PreparedValue {
+    value: Arc<dyn Val>,
+}
+
+impl PreparedValue {
+    /// Convert a public CEL [`Value`] into a reusable native value.
+    pub fn try_from_value(value: Value) -> Result<Self, ExecutionError> {
+        let value: Box<dyn Val> = value.try_into()?;
+        Ok(Self::from_boxed(value))
+    }
+
+    pub(crate) fn from_boxed(value: Box<dyn Val>) -> Self {
+        Self {
+            value: Arc::from(value),
+        }
+    }
+
+    fn as_val(&self) -> &dyn Val {
+        self.value.as_ref()
+    }
+
+    /// Return the CEL runtime type name without formatting the contained value.
+    pub fn type_name(&self) -> &str {
+        self.value.get_type().name()
+    }
+}
+
+impl fmt::Debug for PreparedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedValue")
+            .field("type", &self.type_name())
+            .finish_non_exhaustive()
+    }
+}
+
+impl TryFrom<Value> for PreparedValue {
+    type Error = ExecutionError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from_value(value)
+    }
+}
 
 /// Context is a collection of variables and functions that can be used
 /// by the interpreter to resolve expressions.
@@ -35,13 +85,13 @@ use std::sync::Arc;
 pub enum Context<'a> {
     Root {
         functions: FunctionRegistry,
-        variables: BTreeMap<String, Box<dyn Val>>,
+        variables: BTreeMap<String, PreparedValue>,
         resolver: Option<&'a dyn VariableResolver>,
         env: Arc<Env>,
     },
     Child {
         parent: &'a Context<'a>,
-        variables: BTreeMap<String, Box<dyn Val>>,
+        variables: BTreeMap<String, PreparedValue>,
         resolver: Option<&'a dyn VariableResolver>,
     },
 }
@@ -56,18 +106,8 @@ impl<'a> Context<'a> {
         S: Into<String>,
         V: TryIntoValue,
     {
-        match self {
-            Context::Root { variables, .. } => {
-                let value = value.try_into_value()?;
-                let value: Box<dyn Val> = value.try_into().unwrap();
-                variables.insert(name.into(), value);
-            }
-            Context::Child { variables, .. } => {
-                let value = value.try_into_value()?;
-                let value: Box<dyn Val> = value.try_into().unwrap();
-                variables.insert(name.into(), value);
-            }
-        }
+        let value = value.try_into_value()?;
+        self.add_variable_from_value(name, value);
         Ok(())
     }
 
@@ -76,15 +116,20 @@ impl<'a> Context<'a> {
         S: Into<String>,
         V: Into<Value>,
     {
+        let value: Box<dyn Val> = value.into().try_into().unwrap();
+        self.add_prepared_variable(name, PreparedValue::from_boxed(value));
+    }
+
+    /// Add or replace a variable using a prepared shared value.
+    ///
+    /// Inserting a clone of a retained [`PreparedValue`] is independent of the
+    /// size of the value tree.
+    pub fn add_prepared_variable<S>(&mut self, name: S, value: PreparedValue)
+    where
+        S: Into<String>,
+    {
         match self {
-            Context::Root { variables, .. } => {
-                let value = value.into();
-                let value: Box<dyn Val> = value.try_into().unwrap();
-                variables.insert(name.into(), value);
-            }
-            Context::Child { variables, .. } => {
-                let value = value.into();
-                let value: Box<dyn Val> = value.try_into().unwrap();
+            Context::Root { variables, .. } | Context::Child { variables, .. } => {
                 variables.insert(name.into(), value);
             }
         }
@@ -94,14 +139,7 @@ impl<'a> Context<'a> {
     where
         S: Into<String>,
     {
-        match self {
-            Context::Root { variables, .. } => {
-                variables.insert(name.into(), value);
-            }
-            Context::Child { variables, .. } => {
-                variables.insert(name.into(), value);
-            }
-        }
+        self.add_prepared_variable(name, PreparedValue::from_boxed(value));
     }
 
     pub fn set_variable_resolver(&mut self, r: &'a dyn VariableResolver) {
@@ -133,7 +171,7 @@ impl<'a> Context<'a> {
                 .or_else(|| {
                     variables
                         .get(name)
-                        .map(|b| Cow::<dyn Val>::Borrowed(b.as_ref()))
+                        .map(|value| Cow::<dyn Val>::Borrowed(value.as_val()))
                         .or_else(|| parent.get_variable(name))
                 }),
             Context::Root {
@@ -148,7 +186,7 @@ impl<'a> Context<'a> {
                 .or_else(|| {
                     variables
                         .get(name)
-                        .map(|v| Cow::<dyn Val>::Borrowed(v.as_ref()))
+                        .map(|value| Cow::<dyn Val>::Borrowed(value.as_val()))
                 }),
         }
     }
@@ -279,12 +317,34 @@ impl<T: VariableResolver> VariableResolver for &T {
 
 #[cfg(test)]
 mod test {
-    // A helper function that requires T to implement some traits
-    fn assert_send<T: Send>() {}
+    use super::{Context, PreparedValue};
+    use crate::{Program, Value};
+    use std::collections::HashMap;
+
+    fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
-    fn test_context_is_send() {
-        // This line will only compile if assertion passes
-        assert_send::<super::Context>();
+    fn context_and_prepared_value_are_send_and_sync() {
+        assert_send_sync::<Context>();
+        assert_send_sync::<PreparedValue>();
+    }
+
+    #[test]
+    fn prepared_variable_can_be_reused_and_replaced() {
+        let first =
+            PreparedValue::try_from_value(Value::from(HashMap::from([("value", 1)]))).unwrap();
+        let second =
+            PreparedValue::try_from_value(Value::from(HashMap::from([("value", 2)]))).unwrap();
+        let program = Program::compile("data.value").unwrap();
+        let mut context = Context::default();
+
+        context.add_prepared_variable("data", first.clone());
+        assert_eq!(program.execute(&context), Ok(Value::Int(1)));
+
+        context.add_prepared_variable("data", second);
+        assert_eq!(program.execute(&context), Ok(Value::Int(2)));
+
+        context.add_prepared_variable("data", first);
+        assert_eq!(program.execute(&context), Ok(Value::Int(1)));
     }
 }
