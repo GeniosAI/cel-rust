@@ -689,12 +689,24 @@ impl gen::CELVisitorCompat<'_> for Parser {
                 IdedExpr::default()
             }
             Some(member) => {
-                if ctx.ops.len() % 2 == 0 {
-                    self.visit(member.as_ref());
-                }
                 let op_id = self.helper.next_id(&ctx.ops[0]);
                 let target = self.visit(member.as_ref());
-                self.global_call_or_macro(op_id, operators::LOGICAL_NOT.to_string(), vec![target])
+                let mut expr = self.global_call_or_macro(
+                    op_id,
+                    operators::LOGICAL_NOT.to_string(),
+                    vec![target],
+                );
+
+                for op in ctx.ops.iter().skip(1) {
+                    let op_id = self.helper.next_id(op);
+                    expr = self.global_call_or_macro(
+                        op_id,
+                        operators::LOGICAL_NOT.to_string(),
+                        vec![expr],
+                    );
+                }
+
+                expr
             }
         }
     }
